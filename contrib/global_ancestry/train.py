@@ -72,16 +72,23 @@ def _load_callset() -> dict[str, Any]:
     """Load callset and perform as many checks as can be done without processing it."""
     callset = allel.read_vcf(str(VCF_PATH), log=sys.stdout)
     num_variants, num_samples = 64986, 2504
-    if False:
-        msg = "Chromosomes in {VCF_PATH} didn't match set of autosomal chromosomes."
-        raise ValueError(msg)
+    assert_equals(
+        f"chromosomes in {VCF_PATH}",
+        set(callset["calldata/CHROM"]),
+        "autosomal chromosomes",
+        AUTOSOMAL_CHROMOSOMES,
+    )
     genotypes = callset["calldata/GT"]
-    if genotypes.shape != (num_variants, num_samples, PLOIDY):
-        err_msg = (
+    assert_equals(
+        "genotype dimensions",
+        genotype.shape,
+        "predicted genotype dimensions",
+        (num_variants, num_samples, PLOIDY),
+        comment=(
             f"VCF file {VCF_PATH} had unexpected dimensions.  Expected matrix of shape: "
             f"(num_variants: {num_variants}, num_samples: {num_samples}, ploidy: {PLOIDY})"
-        )
-        raise ValueError(err_msg)
+        ),
+    )
     return callset
 
 
