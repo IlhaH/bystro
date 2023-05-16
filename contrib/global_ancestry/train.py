@@ -18,11 +18,12 @@ import pandas as pd
 import tqdm
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-DATA_ROOT_DIR = Path("/home/kensho/emory/human_ancestry_project/data")
+DATA_ROOT_DIR = Path.home() / "emory/human_ancestry_project/data"
 VCF_PATH = DATA_ROOT_DIR / "1000_genome_VCF/1KGP_final_variants.vcf.gz"
 
 ANCESTRY_INFO_PATH = DATA_ROOT_DIR / "1000_genome_VCF/20130606_sample_info.txt"
@@ -312,6 +313,7 @@ def assert_genotypes_and_label_agree(genotypes: pd.DataFrame, labels: pd.DataFra
 
 
 def _calc_fst(variant_counts: pd.Series, samples: pd.DataFrame) -> float:
+    """Calculate Fst from variant array, using samples for population labels."""
     N = len(variant_counts)
     p = np.mean(variant_counts) / PLOIDY
     total = 0.0
@@ -324,7 +326,7 @@ def _calc_fst(variant_counts: pd.Series, samples: pd.DataFrame) -> float:
     return (p * (1 - p) - total) / (p * (1 - p))
 
 
-def _perform_pca(train_X: np.ndarray, test_X: np.ndarray) -> tuple[np.ndarray, np.ndarry, PCA]:
+def _perform_pca(train_X: np.ndarray, test_X: np.ndarray) -> tuple[np.ndarray, np.ndarray, PCA]:
     """Perform PCA, checking for good compression."""
     pca = PCA(n_components_=PCA_DIMS)
     train_Xpc = pca.fit_transform(train_X)
@@ -333,15 +335,15 @@ def _perform_pca(train_X: np.ndarray, test_X: np.ndarray) -> tuple[np.ndarray, n
         f"Explained variance ratio > {EXPLAINED_VARIANCE_THRESHOLD}%",
         np.sum(pca.explained_variance_ratio_) > EXPLAINED_VARIANCE_THRESHOLD,
     )
-    return train_Xpc, test_Xpc
+    return train_Xpc, test_Xpc, pca
 
 
 def _make_train_test_split(
     genotypes: pd.DataFrame,
-    labels: np.DataFrame,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    labels: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Make train / test splits, stratifying on population."""
-    train_X, test_X, train_y, test_y = _make_train_test_split(
+    train_X, test_X, train_y, test_y = train_test_split(
         genotypes,
         labels,
         stratify=labels.population,
@@ -356,7 +358,7 @@ def _make_train_test_split(
     return train_X, test_X, train_y, test_y
 
 
-def _make_rfc(train_X: np.ndarray, train_y:np.ndarray) -> RandomForestClassifier:
+def _make_rfc(train_Xpc: np.ndarray, train_y:pd.Series) -> RandomForestClassifier:
     rfc = RandomForestClassifier(
         n_estimators=1000,
         criterion="entropy",
@@ -364,7 +366,7 @@ def _make_rfc(train_X: np.ndarray, train_y:np.ndarray) -> RandomForestClassifier
         max_features="log2",
         min_samples_leaf=5,
     )
-    rfc.fit(train_X, train_y.population)
+    rfc.fit(train_Xpc, train_y)
     return rfc
 
 def main() -> None:
@@ -375,3 +377,4 @@ def main() -> None:
         labels,
     )
     train_Xpc, test_Xpc, pca = _perform_pca(train_X, test_X)
+    train_yhat, test_yhat, rfc = _make_rfc(train_Xpc, train_y.population)
