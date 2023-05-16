@@ -9,6 +9,7 @@ ignore = [
 "D213",  # multiline-summary-second-string: conflicts with D212
 "SIM300",  # ignore yoda conditions, too many false positives
 "N806",  # upercase variable names are often ok in scientific programming
+"N803",  # upercase variable names are often ok in scientific programming (ditto)
 ]
 unfixable = [
 "F841",  # don't let ruff remove unused variables by default-- results are often very confusing.
