@@ -1,0 +1,16 @@
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+select = ["A", "B", "C", "D", "E", "F", "G", "I", "N", "Q", "S", "T", "W", "ANN", "ARG", "BLE", "COM", "DJ", "DTZ", "EM", "ERA", "EXE", "FBT", "ICN", "INP", "ISC", "NPY", "PD", "PGH", "PIE", "PL", "PT", "PTH", "PYI", "RET", "RSE", "RUF", "SIM", "SLF", "TCH", "TID", "TRY", "UP", "YTT"]
+ignore = [
+"D203", # one-blank-line-before class: conflicts with D211
+"D213",  # multiline-summary-second-string: conflicts with D212
+"SIM300",  # ignore yoda conditions, too many false positives
+"N806",  # upercase variable names are often ok in scientific programming
+]
+unfixable = [
+"F841",  # don't let ruff remove unused variables by default-- results are often very confusing.
+]
+#select = ["A", "B", "C", "E", "F", "W", "I001"]
