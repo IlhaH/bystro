@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import tqdm
 from sklearn.decomposition import PCA
+from sklearn.ensemble import RandomForestClassifier
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -81,7 +82,7 @@ def _load_callset() -> dict[str, Any]:
     genotypes = callset["calldata/GT"]
     assert_equals(
         "genotype dimensions",
-        genotype.shape,
+        genotypes.shape,
         "predicted genotype dimensions",
         (num_variants, num_samples, PLOIDY),
         comment=(
@@ -323,7 +324,7 @@ def _calc_fst(variant_counts: pd.Series, samples: pd.DataFrame) -> float:
     return (p * (1 - p) - total) / (p * (1 - p))
 
 
-def _perform_pca(train_Xpc: np.ndarray, test_Xpc: np.ndarray) -> tuple[np.ndarray, np.ndarry, PCA]:
+def _perform_pca(train_X: np.ndarray, test_X: np.ndarray) -> tuple[np.ndarray, np.ndarry, PCA]:
     """Perform PCA, checking for good compression."""
     pca = PCA(n_components_=PCA_DIMS)
     train_Xpc = pca.fit_transform(train_X)
@@ -336,9 +337,9 @@ def _perform_pca(train_Xpc: np.ndarray, test_Xpc: np.ndarray) -> tuple[np.ndarra
 
 
 def _make_train_test_split(
-    genotypes,
-    labels,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    genotypes: pd.DataFrame,
+    labels: np.DataFrame,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Make train / test splits, stratifying on population."""
     train_X, test_X, train_y, test_y = _make_train_test_split(
         genotypes,
@@ -355,8 +356,8 @@ def _make_train_test_split(
     return train_X, test_X, train_y, test_y
 
 
-def _make_rfc(train_X, train_y):
-    rfc = RFC(
+def _make_rfc(train_X: np.ndarray, train_y:np.ndarray) -> RandomForestClassifier:
+    rfc = RandomForestClassifier(
         n_estimators=1000,
         criterion="entropy",
         max_depth=20,
@@ -364,8 +365,7 @@ def _make_rfc(train_X, train_y):
         min_samples_leaf=5,
     )
     rfc.fit(train_X, train_y.population)
-    train_phat = rfc.predict_proba(train_X)
-
+    return rfc
 
 def main() -> None:
     """Train global ancestry model."""
