@@ -8,6 +8,7 @@ ignore = [
 "D203", # one-blank-line-before class: conflicts with D211
 "D213",  # multiline-summary-second-string: conflicts with D212
 "SIM300",  # ignore yoda conditions, too many false positives
+"S311", # it's find to use standard pseudo-random generators
 "N806",  # upercase variable names are often ok in scientific programming
 "N803",  # upercase variable names are often ok in scientific programming (ditto)
 ]

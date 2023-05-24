@@ -2,12 +2,16 @@
 
 This script takes a vcf of preprocessed variants (see preprocess_vcfs.sh) and generates:
 
-1.  PCA loadings
+1.  A list of variants to be used for inference.
 
-2.  A classifier mapping PC space to the 26 HapMap populations as well as 5 continent-level
+2.  PCA loadings mapping the list of variants in (1) to PC space.
+
+3.  Classifiers mapping PC space to the 26 HapMap populations as well as 5 continent-level
 superpopulations.
 """
+
 import logging
+import random
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,26 +19,35 @@ from typing import Any
 import allel
 import numpy as np
 import pandas as pd
+import skops
 import tqdm
+from asserts import assert_equals, assert_true
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
+from sklearn.feature_selection import mutual_info_classif
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from utils import get_variant_ids_from_callset
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-DATA_ROOT_DIR = Path.home() / "emory/human_ancestry_project/data"
-VCF_PATH = DATA_ROOT_DIR / "1000_genome_VCF/1KGP_final_variants.vcf.gz"
+DATA_ROOT_DIR = Path.home() / "emory/human_ancestry_project/data/1000_genome_VCF"
+VCF_PATH = DATA_ROOT_DIR / "1KGP_final_variants_1percent.vcf.gz"
+ANCESTRY_MODEL_PRODUCTS_DIR = Path("ancestry_model_products")
 
-ANCESTRY_INFO_PATH = DATA_ROOT_DIR / "1000_genome_VCF/20130606_sample_info.txt"
+ANCESTRY_INFO_PATH = DATA_ROOT_DIR / "20130606_sample_info.txt"
 ROWS, COLS = 0, 1
 QUALITY_CUTOFF = 100  # for variant quality filtering
 PLOIDY = 2
 AUTOSOMAL_CHROMOSOMES = set(range(1, 22 + 1))
 EXPECTED_NUM_POPULATIONS = 26
 FST_THRESHOLD = 0.3
-PCA_DIMS = 30
+MI_THRESHOLD = 0
+PCA_DIMS = 50
 EXPLAINED_VARIANCE_THRESHOLD = 0.1
+RFC_TRAIN_ACCURACY_THRESHOLD = 0.9
+RFC_TEST_ACCURACY_THRESHOLD = 0.8
 # superpop definitions taken from ensembl
 SUPERPOP_FROM_POP = {
     "CHB": "EAS",
@@ -73,10 +86,10 @@ rng = np.random.RandomState(1337)
 def _load_callset() -> dict[str, Any]:
     """Load callset and perform as many checks as can be done without processing it."""
     callset = allel.read_vcf(str(VCF_PATH), log=sys.stdout)
-    num_variants, num_samples = 64986, 2504
+    num_variants, num_samples = 1203135, 2504
     assert_equals(
         f"chromosomes in {VCF_PATH}",
-        set(callset["calldata/CHROM"]),
+        {int(chrom) for chrom in callset["variants/CHROM"]},
         "autosomal chromosomes",
         AUTOSOMAL_CHROMOSOMES,
     )
@@ -96,31 +109,20 @@ def _load_callset() -> dict[str, Any]:
 
 def _load_genotypes() -> pd.DataFrame:
     """Read variants from disk, return as count matrix with dimensions (samples X variants)."""
+    logger.info("loading callset")
     callset = _load_callset()
+    logger.info("finished loading callset")
     samples = callset["samples"]
     genotypes = allel.GenotypeArray(callset["calldata/GT"])
-    variant_ids = np.array(
-        [
-            ":".join([chrom, str(pos), ref, alt])
-            for chrom, pos, ref, alt in zip(
-                callset["variants/CHROM"],
-                callset["variants/POS"],
-                callset["variants/REF"],
-                callset["variants/ALT"][:, 0],
-                # matrix contains all alts for position-- we only want the first because we're
-                # excluding all multi-allelic variants
-                strict=True,
-            )
-        ],
-    )
+    variant_ids = get_variant_ids_from_callset(callset)
     logger.info("starting with GenotypeArray of shape: %s", genotypes.shape)
     ref_is_snp = np.array([len(ref) == 1 for ref in callset["variants/REF"]])
     logger.info("found %s variants where ref is mononucleotide", sum(ref_is_snp))
+    # first alt is SNP and rest are empty...
     alt_is_snp = np.array(
         [len(row[0]) == 1 and set(row[1:]) == {""} for row in callset["variants/ALT"]],
     )
     logger.info("found %s variants where alt is mononucleotide", sum(alt_is_snp))
-    ref_is_snp & alt_is_snp
     allele_counts = genotypes.count_alleles()[:]
     is_single_allele_snp = allele_counts.max_allele() == 1
     logger.info("found %s single allele snps", sum(is_single_allele_snp))
@@ -135,12 +137,12 @@ def _load_genotypes() -> pd.DataFrame:
     logger.info("keeping %s alleles", sum(mask))
     filtered_genotypes = genotypes.compress(mask, axis=ROWS).to_n_alt().T
     variant_ids = variant_ids[mask]
-    if filtered_genotypes.shape != (len(samples), len(variant_ids)):
-        msg = (
-            f"Dimensional mismatch in filtering variants: "
-            f"{filtered_genotypes.shape} vs {len(samples), len(variant_ids)}"
-        )
-        raise AssertionError(msg)
+    assert_equals(
+        "filtered genotype matrix shape",
+        filtered_genotypes.shape,
+        "sample and variant id sizes",
+        (len(samples), len(variant_ids)),
+    )
     return pd.DataFrame(filtered_genotypes, index=samples, columns=variant_ids)
 
 
@@ -164,6 +166,8 @@ def _filter_samples_for_relatedness(
         unrelated_samples.append(family_member)
     unrelated_sample_idx = np.array(unrelated_samples)
     genotypes, labels = genotypes.loc[unrelated_sample_idx], labels.loc[unrelated_sample_idx]
+    # we did this earlier but removing samples could make more variants monomorphic
+    genotypes = _filter_variants_for_monomorphism(genotypes)
     return genotypes, labels
 
 
@@ -209,40 +213,6 @@ def _load_label_data(samples: pd.Index) -> pd.DataFrame:
     return labels
 
 
-def assert_true(
-    description: str,
-    condition: bool | np.bool_,
-    comment: str = "",
-) -> None:
-    """Check that condition holds, raising AssertionError if not."""
-    if not condition:
-        msg = f"Expected {description}."
-        if comment:
-            msg += "  " + comment
-        raise AssertionError(msg)
-
-
-def assert_equals(
-    expected_description: str,
-    expected_value: Any,  # noqa: ANN401  Any is actually appropriate here
-    actual_description: str,
-    actual_value: Any,  # noqa: ANN401
-    comment: str = "",
-) -> None:
-    """Check that expected_value equals actual_value, raising AssertionError if not."""
-    comparison = expected_value == actual_value
-    success = all(comparison) if hasattr(comparison, "__len__") else comparison
-    if success:
-        return
-    msg = (
-        f"Expected {expected_description} ({expected_value}) "
-        f"to equal {actual_description} ({actual_value})."
-    )
-    if comment:
-        msg += "  " + comment
-    raise AssertionError(msg)
-
-
 def _filter_variants_for_maf(genotypes: pd.DataFrame, threshold: float = 0.1) -> pd.DataFrame:
     logger.info("Filtering %s genotypes for MAF threshold {threshold}", len(genotypes.columns))
     frequencies = genotypes.mean(axis=0) / PLOIDY
@@ -282,6 +252,18 @@ def _filter_variants_for_ld(
     return genotypes
 
 
+def _filter_variants_for_monomorphism(genotypes: pd.DataFrame) -> pd.DataFrame:
+    """Exclude monomorphic variants, i.e. those with no variation in dataset."""
+    monomorphic_mask = genotypes.std(axis=ROWS) > 0
+    num_excluded_monomorphic_variants = np.sum(~monomorphic_mask)
+    logger.info("Removing %s monomorphic variants", num_excluded_monomorphic_variants)
+    monomorphic_fraction = num_excluded_monomorphic_variants / len(monomorphic_mask)
+    assert_true(
+        "fraction of excluded monomorphic variants less than 1%", monomorphic_fraction < 1 / 100
+    )
+    return genotypes[genotypes.columns[monomorphic_mask]]
+
+
 def _filter_variants_for_fst(genotypes: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
     """Filter out variants far from HWE, which are likely to be genotyping errors."""
     fsts = np.array(
@@ -304,6 +286,7 @@ def _load_dataset() -> tuple[pd.DataFrame, pd.DataFrame]:
     genotypes = _filter_variants_for_maf(genotypes)
     genotypes = _filter_variants_for_ld(genotypes)
     assert_genotypes_and_label_agree(genotypes, labels)
+    assert_equals("genotypes.shape", genotypes.shape, "expected genotypes.shape", (1870, 150502))
     return genotypes, labels
 
 
@@ -328,9 +311,25 @@ def _calc_fst(variant_counts: pd.Series, samples: pd.DataFrame) -> float:
 
 def _perform_pca(train_X: np.ndarray, test_X: np.ndarray) -> tuple[np.ndarray, np.ndarray, PCA]:
     """Perform PCA, checking for good compression."""
-    pca = PCA(n_components_=PCA_DIMS)
-    train_Xpc = pca.fit_transform(train_X)
-    test_Xpc = pca.transform(test_X)
+    logger.info("Beginning PCA")
+    minimum_variant_std = train_X.std(axis=ROWS).min()
+    assert_true(
+        "minimum variant standard deviation greater than zero",
+        minimum_variant_std > 0,
+        comment="Have you excluded all monomorphic alleles?",
+    )
+    train_Xpc, pca = allel.pca(
+        train_X.T,
+        n_components=PCA_DIMS,
+        scaler="patterson",
+    )  # must be transposed for allel pca
+    logger.info(
+        "Cumulative explained variance ratio for %s dimensions: %s",
+        len(pca.explained_variance_ratio_),
+        np.cumsum(pca.explained_variance_ratio_),
+    )
+    test_Xpc = pca.transform(test_X.T)
+
     assert_true(
         f"Explained variance ratio > {EXPLAINED_VARIANCE_THRESHOLD}%",
         np.sum(pca.explained_variance_ratio_) > EXPLAINED_VARIANCE_THRESHOLD,
@@ -358,16 +357,101 @@ def _make_train_test_split(
     return train_X, test_X, train_y, test_y
 
 
-def _make_rfc(train_Xpc: np.ndarray, train_y:pd.Series) -> RandomForestClassifier:
-    rfc = RandomForestClassifier(
-        n_estimators=1000,
-        criterion="entropy",
-        max_depth=20,
-        max_features="log2",
-        min_samples_leaf=5,
+def _make_rfc(
+    train_Xpc: np.ndarray,
+    test_Xpc: np.ndarray,
+    train_y: pd.Series,
+    test_y: pd.Series,
+) -> RandomForestClassifier:
+    trials = 10
+    tuning_results = {}
+
+    param_choices = {
+        "n_estimators": [1000],
+        "max_depth": [5, 10, 20, None],
+        "min_samples_leaf": [1, 2, 5, 10],
+        "criterion": ["gini", "entropy", "log_loss"],
+        "max_features": ["sqrt", "log2", None],
+    }
+
+    for _trial in range(trials):
+        params: dict[str, str | int | None] = {
+            k: random.choice(vs) for (k, vs) in param_choices.items()
+        }
+        rfc = RandomForestClassifier(**params.items(), random_state=1337)
+        rfc.fit(train_Xpc, train_y.population)
+        train_yhat = rfc.predict(train_Xpc)
+        test_yhat = rfc.predict(test_Xpc)
+        train_acc, test_acc = (
+            accuracy_score(train_y.population, train_yhat),
+            accuracy_score(test_y.population, test_yhat),
+        )
+        param_tuple = tuple(sorted(params.items()))
+        tuning_results[param_tuple] = (train_acc, test_acc)
+
+    values, test_accuracy = 1, 1
+    best_params = max(tuning_results.items(), key=lambda kv: kv[values][test_accuracy])
+    rfc = RandomForestClassifier(**{k: v for (k, v) in best_params.items() if k != "pca_dim"})
+    rfc.fit(train_Xpc, train_y.population)
+    train_yhat = rfc.predict(train_Xpc)
+    test_yhat = rfc.predict(test_Xpc)
+    train_acc, test_acc = (
+        accuracy_score(train_y.population, train_yhat),
+        accuracy_score(test_y.population, test_yhat),
     )
-    rfc.fit(train_Xpc, train_y)
-    return rfc
+    assert_true("RFC train accuracy >= 0.9", train_acc > RFC_TRAIN_ACCURACY_THRESHOLD)
+    assert_true("RFC test accuracy >= 0.8", test_acc > RFC_TEST_ACCURACY_THRESHOLD)
+
+
+def _filter_variants_for_mi(
+    train_X: pd.DataFrame, test_X: pd.DataFrame, train_y_pop: pd.Series
+) -> np.ndarray:
+    mi_df = _get_mi_df(train_X, train_y_pop)
+    mi_keep_cols = mi_df[mi_df.mutual_info > MI_THRESHOLD].index
+
+    return train_X[mi_keep_cols], test_X[mi_keep_cols]
+
+
+def _calc_mi(xs: list, ys: list) -> float:
+    """Calculate mutual information between xs and ys."""
+    if len(xs) != len(ys):
+        raise ValueError("xs and ys must have same length.")
+    N = len(xs)
+    x_counts = Counter()
+    y_counts = Counter()
+    xy_counts = Counter()
+    for x, y in zip(xs, ys):
+        x_counts[x] += 1
+        y_counts[y] += 1
+        xy_counts[(x, y)] += 1
+    x_ps = np.array(list(x_counts.values())) / N
+    y_ps = np.array(list(y_counts.values())) / N
+    xy_ps = np.array(list(xy_counts.values())) / N
+    x_entropy = -(x_ps @ np.log2(x_ps))
+    y_entropy = -(y_ps @ np.log2(y_ps))
+    xy_entropy = -(xy_ps @ np.log2(xy_ps))
+    return (x_entropy + y_entropy) - xy_entropy
+
+
+def _get_mi_df(train_X: np.ndarray, train_y_pop: pd.Series) -> np.ndarray:
+    mis = mis = np.array(
+        [_calc_mi(col, train_y.population) for col in tqdm.tqdm(train_X.to_numpy().T)]
+    )
+    mi_df = pd.DataFrame(mis, columns=["mutual_info"], index=train_X.columns)
+    mi_df.to_parquet("mi_df.parquet")
+    return mi_df
+
+
+def _serialize_data(variants: list[str], pca: PCA, rfc: RandomForestClassifier) -> None:
+    variants_fpath = ANCESTRY_MODEL_PRODUCTS_DIR / "variants.txt"
+    pca_fpath = ANCESTRY_MODEL_PRODUCTS_DIR / "pca.skop"
+    rfc_fpath = ANCESTRY_MODEL_PRODUCTS_DIR / "rfc.skop"
+
+    with variants_fpath.open("w") as f:
+        f.write("\n".join(variants))
+    skops.io.dump(pca, pca_fpath)
+    skops.io.dump(rfc, rfc_fpath)
+
 
 def main() -> None:
     """Train global ancestry model."""
@@ -376,5 +460,7 @@ def main() -> None:
         genotypes,
         labels,
     )
-    train_Xpc, test_Xpc, pca = _perform_pca(train_X, test_X)
-    train_yhat, test_yhat, rfc = _make_rfc(train_Xpc, train_y.population)
+    train_X_filtered, test_X_filtered = _filter_variants_for_mi(train_X, test_X, train_y.population)
+    train_Xpc, test_Xpc, pca = _perform_pca(train_X_filtered, test_X_filtered)
+    rfc = _make_rfc(train_Xpc, test_Xpc, train_y.population, test_y.population)
+    _serialize_data(train_X_filtered.columns, pca, rfc)
