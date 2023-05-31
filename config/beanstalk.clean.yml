@@ -14,6 +14,10 @@ beanstalkd:
     filters:
       submission: filters
       events: filters_events
+    ancestry:
+      submission: ancestry
+      events: ancestry_events
+
   events:
     started : started
     completed : completed
