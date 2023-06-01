@@ -1,14 +1,11 @@
-from ipaddress import AddressValueError
-from pydantic import ValidationError
+"""Test ancestry_types.py."""
 
-from ..ancestry_types import (
-    ProbabilityInterval,
-    PopulationVector,
-    Address,
-    SuperpopVector,
-)
+from ipaddress import AddressValueError
 
 import pytest
+from pydantic import ValidationError
+
+from ancestry.ancestry_types import Address, PopulationVector, ProbabilityInterval, SuperpopVector
 
 POPULATIONS = [
     "ACB",
@@ -49,9 +46,8 @@ SUPERPOPS = [
 ]
 
 
-def test_Address():
-    """Ensure we can instantiate, validate Address correctly"""
-
+def test_Address() -> None:
+    """Ensure we can instantiate, validate Address correctly."""
     well_formed_addresses = [
         "127.0.0.1:80",
         "//127.0.0.1:80",
@@ -70,13 +66,12 @@ def test_Address():
         "beanstalkd//127.0.0.1:80",
     ]
     for raw_address in malformed_addresses:
-        print(raw_address)
         with pytest.raises((ValidationError, AddressValueError)):
             address = Address.from_str(raw_address)
 
 
-def test_ProbabilityInterval():
-    """Ensure we can instantiate, validate ProbabilityInterval correctly"""
+def test_ProbabilityInterval() -> None:
+    """Ensure we can instantiate, validate ProbabilityInterval correctly."""
     ProbabilityInterval(lower_bound=0.1, upper_bound=0.9)
 
     with pytest.raises(ValidationError):
@@ -89,25 +84,30 @@ def test_ProbabilityInterval():
         ProbabilityInterval(lower_bound=1, upper_bound=0)
 
 
-def test_PopulationVector():
-    """Ensure we can instantiate, validate PopulationVector correctly"""
-    prob_int = ProbabilityInterval(lower_bound=0, upper_bound=1)
-    pop_kwargs = {pop: prob_int for pop in POPULATIONS}
+prob_int = ProbabilityInterval(lower_bound=0, upper_bound=1)
+pop_kwargs = {pop: prob_int for pop in POPULATIONS}
+
+
+def test_PopulationVector() -> None:
+    """Ensure we can instantiate, validate PopulationVector correctly."""
     PopulationVector(**pop_kwargs)
 
+
+def test_PopulationVector_with_missing_key() -> None:
     pop_kwargs_with_missing_key = pop_kwargs.copy()
     del pop_kwargs_with_missing_key["ACB"]
     with pytest.raises(ValidationError):
         PopulationVector(**pop_kwargs_with_missing_key)
 
+
+def test_PopulationVector_with_extra_key() -> None:
     pop_kwargs_with_extra_key = pop_kwargs.copy()
     pop_kwargs_with_extra_key["FOO"] = prob_int
     with pytest.raises(ValidationError):
         PopulationVector(**pop_kwargs_with_extra_key)
 
 
-def test_SuperpopVector():
-    """Ensure we can instantiate, validate PopulationVector correctly"""
+def test_SuperpopVector() -> None:
     prob_int = ProbabilityInterval(lower_bound=0, upper_bound=1)
     SuperpopVector(
         AFR=prob_int,
@@ -116,6 +116,9 @@ def test_SuperpopVector():
         EUR=prob_int,
         SAS=prob_int,
     )
+
+
+def test_SuperpopVector_missing_key() -> None:
     with pytest.raises(ValidationError):
         SuperpopVector(
             AFR=prob_int,
@@ -123,6 +126,9 @@ def test_SuperpopVector():
             EAS=prob_int,
             EUR=prob_int,
         )
+
+
+def test_SuperpopVector_extra_key() -> None:
     with pytest.raises(ValidationError):
         SuperpopVector(
             AFR=prob_int,

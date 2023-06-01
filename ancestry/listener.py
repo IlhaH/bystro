@@ -1,16 +1,14 @@
-import urllib
+"""Provide a listener to allow the ancestry model to talk over beanstalk."""
+
 import argparse
-from dataclasses import dataclass
-import logging
 import itertools
+import logging
 from pathlib import Path
 
+from ancestry_types import Address, AncestrySubmission
 from pystalk import BeanstalkClient, BeanstalkError
 from pystalk.client import Job
 from ruamel.yaml import YAML
-
-from ancestry_types import AncestrySubmission, HostAndPort
-
 
 logging.basicConfig(
     filename="ancestry.log",
@@ -26,24 +24,21 @@ BEANSTALK_TIMEOUT_ERROR = "TIMED_OUT"
 
 
 def _load_yaml(path: Path) -> dict[str, str | dict]:
-    with open(path, "r", encoding="utf-8") as queue_config_file:
+    with path.open() as queue_config_file:
         return YAML(typ="safe").load(queue_config_file)
 
 
-def execute_job(job: Job) -> None:
-    msg = "executing job: {}".format(job)
-    print(msg)
-    logger.info(msg)
+def _execute_job(job: Job) -> None:
+    """Dummy job that just extracts the vcf for now."""
+    msg = f"executing job: {job}"
+    logger.info("got message: %s", msg)
     json_payload = job.job_data.decode()
     ancestry_submission = AncestrySubmission.parse_raw(json_payload)
-    print("parsed ancestry submission:", ancestry_submission)
+    logger.debug("parsed ancestry submission: %s", ancestry_submission)
 
 
-def main():
-    """
-    Start ancestry server that listens to beanstalkd queue
-    and renders global ancestry predictions
-    """
+def main() -> None:
+    """Run ancestry server accepting genotype requests and rendering global ancestry predictions."""
     parser = argparse.ArgumentParser(description="Run the ancestry server.")
     parser.add_argument(
         "--queue_conf",
@@ -52,38 +47,36 @@ def main():
     )
     args = parser.parse_args()
     beanstalk_conf = _load_yaml(Path(args.queue_conf))["beanstalkd"]
-    print(beanstalk_conf)
     addresses = beanstalk_conf["addresses"]
     ancestry_tubes = beanstalk_conf["tubes"]["ancestry"]
     submission_tube = ancestry_tubes["submission"]
-    events_tube = ancestry_tubes["events"]
+    _events_tube = ancestry_tubes["events"]
 
     # todo: refactor multiple client logic
     beanstalk_clients = []
     for address in addresses:
-        parsed_address = HostAndPort.from_str(address)
+        parsed_address = Address.from_str(address)
         client = BeanstalkClient(parsed_address.host, parsed_address.port)
         client.watchlist = {submission_tube}
         beanstalk_clients.append(client)
     num_clients = len(beanstalk_clients)
 
     for client_idx in itertools.count():
-        logger.debug("starting loop with {}".format(client_idx))
+        logger.debug("starting ancestry listening loop with %s", client_idx)
         client = beanstalk_clients[client_idx % num_clients]
         try:
             job = client.reserve_job()
         except BeanstalkError as err:
             if err.message == BEANSTALK_TIMEOUT_ERROR:
                 logger.debug(
-                    "Timed out while trying to reserve a job: this is expected if no jobs are present"
+                    "Timed out while reserving a job: this is expected if no jobs are present"
                 )
                 continue
-            else:
-                raise err
+            raise
         try:
-            result = execute_job(job)
-        except Exception as e:
-            logger.error("Encountered exception {} while handling job {}", e, job)
+            _execute_job(job)
+        except Exception:
+            logger.exception("Encountered exception while handling job %s", job)
             client.release_job(job.job_id)
             raise
         client.delete_job(job.job_id)

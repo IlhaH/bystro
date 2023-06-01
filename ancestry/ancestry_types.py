@@ -1,63 +1,80 @@
+"""Pydantic validators for common shapes of data in ancestry."""
+
 import re
-import numpy as np
-from typing import Tuple
-from ipaddress import IPv4Address
-from dataclasses import dataclass
+import urllib
+from ipaddress import AddressValueError, IPv4Address
+from typing import Annotated, Any
+
 from pydantic import (
     BaseModel,
     Extra,
+    Field,
     confloat,
     validator,
-    ValidationError,
-    root_validator,
 )
-import urllib
+
+MAX_VALID_PORT = 2**16 - 1
 
 
 class Address(BaseModel, extra=Extra.forbid):
+    """Model a host and port."""
+
     host: str
-    port: int
+    port: int = Field(ge=0, le=MAX_VALID_PORT)
 
     @classmethod
-    def from_str(cls, raw_address: str) -> "Address":
+    def from_str(cls: type["Address"], raw_address: str) -> "Address":
         """Parse an Address from a string."""
-        # urlsplit needs an absolute url...
+        # urlsplit needs an absolute url, so we need to make it absolute if not so already.
         if not re.match(r"(beanstalkd:)?//", raw_address):
             absolute_address = "//" + raw_address
         else:
             absolute_address = raw_address
-        parsed_address = urllib.parse.urlsplit(absolute_address)
-        validated_host = str(IPv4Address(parsed_address.hostname))
-        return cls(host=validated_host, port=parsed_address.port)
+        # mypy seems confused about urllib's attrs
+        parsed_address = urllib.parse.urlsplit(absolute_address)  # type: ignore [attr-defined]
+        return cls(
+            host=parsed_address.hostname,
+            port=parsed_address.port,
+        )
 
     @validator("host")
-    def host_is_valid_ip_address(cls, raw_host):
+    def host_is_valid_ip_address(cls: "Address", raw_host: str) -> str:  # noqa: [N805]
+        """Ensure host is a valid IPv4 address."""
+        #  We really shouldn't be storing IP addresses as raw strings at all, but this usage is
+        #  ubiquitous in libraries we need to work with.  A compromise is to validate the address
+        #  string upon receipt and store it as str afterwards.
         try:
             host = IPv4Address(raw_host)
         except AddressValueError as err:
             err_msg = f"Couldn't parse host ({raw_host}) as IPv4Address: {err}"
-            raise ValueError(err_msg)
+            raise ValueError(err_msg) from err
         return str(host)
 
 
 class AncestrySubmission(BaseModel, extra=Extra.forbid):
+    """Represent an incoming submission to the ancestry worker."""
+
     vcf_path: str
 
 
-# ConstrainedTuple = Tuple[confloat(ge=0, le=1), confloat(ge=0, le=1)]
-
-
 class ProbabilityInterval(BaseModel, extra=Extra.forbid):
-    lower_bound: confloat(ge=0, le=1)
-    upper_bound: confloat(ge=0, le=1)
+    """Represent an interval of probabilities."""
+
+    lower_bound: float = Field(ge=0, le=1)
+    upper_bound: float = Field(ge=0, le=1)
 
     @validator("upper_bound")
-    def interval_is_valid(cls, upper_bound, values):
-        # upper_bound = v
+    def interval_is_valid(
+        cls: "ProbabilityInterval",  # noqa: N805
+        upper_bound: float,
+        values: dict[str, Any],
+    ) -> float:
+        """Ensure interval is non-empty."""
         lower_bound = values["lower_bound"]
         if not lower_bound <= upper_bound:
-            err_msg = "Must have lower_bound <= upper_bound: got (lower_bound={}, upper_bound={}) instead.".format(
-                lower_bound, upper_bound
+            err_msg = (
+                f"Must have lower_bound <= upper_bound:"
+                f" got (lower_bound={lower_bound}, upper_bound={upper_bound}) instead."
             )
             raise ValueError(err_msg)
         return upper_bound
@@ -76,6 +93,8 @@ class ProbabilityInterval(BaseModel, extra=Extra.forbid):
 # this definition is mildly ugly but the alternative is to
 # generate it dynamically, which would be even worse...
 class PopulationVector(BaseModel, extra=Extra.forbid):
+    """A vector of probability intervals for populations."""
+
     ACB: ProbabilityInterval
     ASW: ProbabilityInterval
     BEB: ProbabilityInterval
@@ -106,6 +125,8 @@ class PopulationVector(BaseModel, extra=Extra.forbid):
 
 
 class SuperpopVector(BaseModel, extra=Extra.forbid):
+    """A vector of probability intervals for superpopulations."""
+
     AFR: ProbabilityInterval
     AMR: ProbabilityInterval
     EAS: ProbabilityInterval
@@ -114,12 +135,22 @@ class SuperpopVector(BaseModel, extra=Extra.forbid):
 
 
 class AncestryResult(BaseModel, extra=Extra.forbid):
+    """An ancestry result from a sample."""
+
     sample_id: str
     populations: PopulationVector
     superpops: SuperpopVector
-    missingness: confloat(ge=0, le=1)
+    missingness: Annotated[
+        float,
+        confloat(
+            ge=0,
+            le=1,
+        ),
+    ]
 
 
 class AncestryResponse(BaseModel, extra=Extra.forbid):
+    """An outgoing response from the ancestry worker."""
+
     vcf_filepath: str
     results: list[AncestryResult]
