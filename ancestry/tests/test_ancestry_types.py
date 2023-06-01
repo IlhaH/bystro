@@ -1,11 +1,17 @@
 """Test ancestry_types.py."""
 
-from ipaddress import AddressValueError
 
 import pytest
 from pydantic import ValidationError
 
-from ancestry.ancestry_types import Address, PopulationVector, ProbabilityInterval, SuperpopVector
+from ancestry.ancestry_types import (
+    Address,
+    AncestryResponse,
+    AncestryResult,
+    PopulationVector,
+    ProbabilityInterval,
+    SuperpopVector,
+)
 
 POPULATIONS = [
     "ACB",
@@ -66,7 +72,7 @@ def test_Address() -> None:
         "beanstalkd//127.0.0.1:80",
     ]
     for raw_address in malformed_addresses:
-        with pytest.raises((ValidationError, AddressValueError)):
+        with pytest.raises((ValidationError, ValueError)):
             address = Address.from_str(raw_address)
 
 
@@ -86,6 +92,7 @@ def test_ProbabilityInterval() -> None:
 
 prob_int = ProbabilityInterval(lower_bound=0, upper_bound=1)
 pop_kwargs = {pop: prob_int for pop in POPULATIONS}
+superpop_kwargs = {pop: prob_int for pop in SUPERPOPS}
 
 
 def test_PopulationVector() -> None:
@@ -120,7 +127,7 @@ def test_SuperpopVector() -> None:
 
 def test_SuperpopVector_missing_key() -> None:
     with pytest.raises(ValidationError):
-        SuperpopVector(
+        SuperpopVector(  # type: ignore [call-arg]
             AFR=prob_int,
             AMR=prob_int,
             EAS=prob_int,
@@ -130,7 +137,7 @@ def test_SuperpopVector_missing_key() -> None:
 
 def test_SuperpopVector_extra_key() -> None:
     with pytest.raises(ValidationError):
-        SuperpopVector(
+        SuperpopVector(  # type: ignore [call-arg]
             AFR=prob_int,
             AMR=prob_int,
             EAS=prob_int,
@@ -138,3 +145,48 @@ def test_SuperpopVector_extra_key() -> None:
             SAS=prob_int,
             FOO=prob_int,
         )
+
+
+def test_AncestryResult() -> None:
+    AncestryResult(
+        sample_id="my_sample_id",
+        populations=PopulationVector(**pop_kwargs),
+        superpops=SuperpopVector(**superpop_kwargs),
+        missingness=0.5,
+    )
+
+
+def test_AncestryResult_invalid_missingness() -> None:
+    with pytest.raises(ValidationError):
+        AncestryResult(
+            sample_id="my_sample_id",
+            populations=PopulationVector(**pop_kwargs),
+            superpops=SuperpopVector(**superpop_kwargs),
+            missingness=1.1,
+        )
+
+
+def test_AncestryResponse() -> None:
+    AncestryResponse(
+        vcf_filepath="myfile.vcf",
+        results=[
+            AncestryResult(
+                sample_id="foo",
+                populations=PopulationVector(**pop_kwargs),
+                superpops=SuperpopVector(**superpop_kwargs),
+                missingness=0.5,
+            ),
+            AncestryResult(
+                sample_id="bar",
+                populations=PopulationVector(**pop_kwargs),
+                superpops=SuperpopVector(**superpop_kwargs),
+                missingness=0.5,
+            ),
+            AncestryResult(
+                sample_id="baz",
+                populations=PopulationVector(**pop_kwargs),
+                superpops=SuperpopVector(**superpop_kwargs),
+                missingness=0.5,
+            ),
+        ],
+    )

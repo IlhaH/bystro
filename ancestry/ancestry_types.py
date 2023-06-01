@@ -3,15 +3,9 @@
 import re
 import urllib
 from ipaddress import AddressValueError, IPv4Address
-from typing import Annotated, Any
+from typing import Any
 
-from pydantic import (
-    BaseModel,
-    Extra,
-    Field,
-    confloat,
-    validator,
-)
+from pydantic import BaseModel, Extra, Field, root_validator, validator
 
 MAX_VALID_PORT = 2**16 - 1
 
@@ -32,13 +26,19 @@ class Address(BaseModel, extra=Extra.forbid):
             absolute_address = raw_address
         # mypy seems confused about urllib's attrs
         parsed_address = urllib.parse.urlsplit(absolute_address)  # type: ignore [attr-defined]
+        if parsed_address.hostname is None:
+            msg = f"Couldn't find hostname in {raw_address}"
+            raise ValueError(msg)
+        if parsed_address.port is None:
+            msg = f"Couldn't find port in {raw_address}"
+            raise ValueError(msg)
         return cls(
             host=parsed_address.hostname,
             port=parsed_address.port,
         )
 
     @validator("host")
-    def host_is_valid_ip_address(cls: "Address", raw_host: str) -> str:  # noqa: [N805]
+    def _host_is_valid_ip_address(cls: "Address", raw_host: str) -> str:  # noqa: [N805]
         """Ensure host is a valid IPv4 address."""
         #  We really shouldn't be storing IP addresses as raw strings at all, but this usage is
         #  ubiquitous in libraries we need to work with.  A compromise is to validate the address
@@ -64,8 +64,8 @@ class ProbabilityInterval(BaseModel, extra=Extra.forbid):
     upper_bound: float = Field(ge=0, le=1)
 
     @validator("upper_bound")
-    def interval_is_valid(
-        cls: "ProbabilityInterval",  # noqa: N805
+    def _interval_is_valid(
+        cls: "ProbabilityInterval",  # noqa: N805 (false positive on cls name)
         upper_bound: float,
         values: dict[str, Any],
     ) -> float:
@@ -140,13 +140,7 @@ class AncestryResult(BaseModel, extra=Extra.forbid):
     sample_id: str
     populations: PopulationVector
     superpops: SuperpopVector
-    missingness: Annotated[
-        float,
-        confloat(
-            ge=0,
-            le=1,
-        ),
-    ]
+    missingness: float = Field(ge=0, le=1)
 
 
 class AncestryResponse(BaseModel, extra=Extra.forbid):
@@ -154,3 +148,14 @@ class AncestryResponse(BaseModel, extra=Extra.forbid):
 
     vcf_filepath: str
     results: list[AncestryResult]
+
+    @root_validator
+    def _ensure_sample_ids_unique(cls, values: dict[str, Any]) -> dict[str, Any]:  # noqa: N805
+        results = values["results"]
+        sample_ids = [result.sample_id for result in results]
+        unique_sample_ids = set(sample_ids)
+        if len(unique_sample_ids) < len(sample_ids):
+            duplicates = [sid for sid in unique_sample_ids if sample_ids.count(sid) > 1]
+            err_msg = f"Expected unique sample ids but found duplicated samples {duplicates}"
+            raise ValueError(err_msg)
+        return values

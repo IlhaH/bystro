@@ -7,3 +7,4 @@ Module's functionality to cover:
 - Orchestrating inference jobs within bystro
 """
 
+__version__ = "0.0.1"

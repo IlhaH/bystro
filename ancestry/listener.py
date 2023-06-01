@@ -1,14 +1,15 @@
 """Provide a listener to allow the ancestry model to talk over beanstalk."""
-
 import argparse
 import itertools
 import logging
 from pathlib import Path
+from typing import Any
 
-from ancestry_types import Address, AncestrySubmission
 from pystalk import BeanstalkClient, BeanstalkError
 from pystalk.client import Job
 from ruamel.yaml import YAML
+
+from ancestry.ancestry_types import Address, AncestrySubmission
 
 logging.basicConfig(
     filename="ancestry.log",
@@ -23,13 +24,13 @@ logger.info("Starting ancestry listener")
 BEANSTALK_TIMEOUT_ERROR = "TIMED_OUT"
 
 
-def _load_yaml(path: Path) -> dict[str, str | dict]:
-    with path.open() as queue_config_file:
-        return YAML(typ="safe").load(queue_config_file)
+def _load_yaml(path: Path) -> dict[str, Any]:
+    with path.open() as file_handler:
+        return YAML(typ="safe").load(file_handler)
 
 
 def _execute_job(job: Job) -> None:
-    """Dummy job that just extracts the vcf for now."""
+    """Represent dummy job that just extracts the vcf for now."""
     msg = f"executing job: {job}"
     logger.info("got message: %s", msg)
     json_payload = job.job_data.decode()
@@ -47,8 +48,8 @@ def main() -> None:
     )
     args = parser.parse_args()
     beanstalk_conf = _load_yaml(Path(args.queue_conf))["beanstalkd"]
-    addresses = beanstalk_conf["addresses"]
-    ancestry_tubes = beanstalk_conf["tubes"]["ancestry"]
+    addresses: dict[str, Any] = beanstalk_conf["addresses"]
+    ancestry_tubes: dict[str, Any] = beanstalk_conf["tubes"]["ancestry"]
     submission_tube = ancestry_tubes["submission"]
     _events_tube = ancestry_tubes["events"]
 

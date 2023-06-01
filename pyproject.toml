@@ -48,13 +48,17 @@ select = [
 "TRY",
 "UP",
 "YTT"]
+
 ignore = [
+"ANN101",  # don't require to annotate self, especially because ruff is sometimes confused about ANN101 vs ANN102
+"ANN102",  # don't require to annotate cls
 "D203", # one-blank-line-before class: conflicts with D211
 "D213",  # multiline-summary-second-string: conflicts with D212
 "SIM300",  # ignore yoda conditions, too many false positives
 "S311", # it's find to use standard pseudo-random generators
 "N806",  # upercase variable names are often ok in scientific programming
 "N803",  # upercase variable names are often ok in scientific programming (ditto)
+"TID252",  # don't ban relative imports-- ruff seems too easily confused by this
 # don't worry about trailing commas,
 # this interacts too confusingly with black: https://github.com/charliermarsh/ruff/discussions/4213
 "COM812"  
